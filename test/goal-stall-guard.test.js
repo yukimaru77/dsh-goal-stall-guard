@@ -50,7 +50,7 @@ function harness() {
     on(name, fn) { listeners.set(name, [...(listeners.get(name) ?? []), fn]); return () => {} },
   }
   apply(ctx)
-  const round = async ({ tools = false, source = 'goal' } = {}) => {
+  const round = async ({ tools = false, source = 'goal', args } = {}) => {
     turn++
     append('turn/start', { turn })
     append('step/start', { turn, step: 1 })
@@ -59,8 +59,9 @@ function harness() {
     const reply = (step, content) => append('assistant/message', { turn, step, message: { id: `a${turn}-${step}`, role: 'assistant', content, source: { kind: 'model', provider: 'p', model: 'm' } }, stream: [] }, { surfaceOp: 'append' })
     if (tools) {
       const id = `call-${turn}`
-      reply(1, [{ type: 'tool-call', id, name: 'bash', arguments: '{}' }])
-      append('tool/call', { turn, step: 1, callId: id, name: 'bash', arguments: '{}' })
+      const argv = args ?? JSON.stringify({ command: `step ${turn}` })
+      reply(1, [{ type: 'tool-call', id, name: 'bash', arguments: argv }])
+      append('tool/call', { turn, step: 1, callId: id, name: 'bash', arguments: argv })
       append('tool/result', { turn, step: 1, message: createToolResultMessage({ callId: id, content: [{ type: 'text', text: 'ok' }], isError: false }) }, { surfaceOp: 'append' })
       append('step/end', { turn, step: 1 })
       append('step/start', { turn, step: 2 })
@@ -89,7 +90,7 @@ test('three idle goal rounds bring a note and hide all but the latest of them', 
   const h = harness()
   await h.round({ tools: true })
   for (let i = 0; i < 3; i++) await h.round()
-  assert.match(h.note(), /last 3 goal rounds ended without any tool call/)
+  assert.match(h.note(), /last 3 goal rounds made no progress/)
   assert.match(h.cards().at(-1), /^⏸ goal の空回りを検知.*turn 2〜3/)
   const visible = h.visible()
   assert.ok(!visible.includes('status 2') && !visible.includes('status 3'))
@@ -135,10 +136,30 @@ test('/clean-idle-rounds hides every past idle round and keeps rounds that worke
   await h.round({ tools: true })
   await h.round()
   const result = h.run('clean-idle-rounds')
-  assert.match(result.text, /goal のラウンド 3件（turn 2〜5）/)
+  assert.match(result.text, /goal のラウンド（ツールなし、または同じ確認の繰り返し） 3件（turn 2〜5）/)
   const visible = h.visible()
   for (const n of [2, 3, 5]) assert.ok(!visible.includes(`status ${n}`) && !visible.includes(`goal ${n}`))
   for (const n of [1, 4]) assert.ok(visible.includes(`work ${n}`) && visible.includes(`goal ${n}`))
   assert.match(h.run('clean-idle-rounds').text, /ありません/)
   h.storable()
+})
+
+test('rounds that only re-run the same checks count as making no progress', async () => {
+  const h = harness()
+  const same = JSON.stringify({ command: 'python3 run_conformance.py' })
+  await h.round({ tools: true, args: same })
+  assert.equal(h.note(), '')
+  for (let i = 0; i < 3; i++) await h.round({ tools: true, args: same })
+  assert.match(h.note(), /Re-running the same checks is not progress/)
+  assert.match(h.cards().at(-1), /同じ確認の繰り返し/)
+  await h.round({ tools: true, args: JSON.stringify({ command: 'python3 run_lecture_s01_s19.py' }) })
+  assert.equal(h.note(), '', 'a new command is progress')
+  h.storable()
+})
+
+test('labels, timeouts and read-backs do not make a repeated check look new', async () => {
+  const h = harness()
+  const check = (n) => JSON.stringify({ command: 'python3 run_conformance.py', description: `Repeat final verification for round ${n}`, run_in_background: true })
+  for (let i = 0; i < 4; i++) await h.round({ tools: true, args: check(i) })
+  assert.notEqual(h.note(), '')
 })
