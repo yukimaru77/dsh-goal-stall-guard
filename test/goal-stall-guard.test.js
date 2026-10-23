@@ -77,6 +77,7 @@ function harness() {
   return {
     session, agent, blocked, round,
     note: () => contexts.get('goal-stall-guard').text({ scope: agent }),
+    run: (name) => commands.get(name).handler({ agent, rawInput: '' }),
     cards: () => session.snapshotEvents().filter(e => e.type === 'command/done').map(e => e.data.text),
     visible: () => session.deriveMessages().map(m => m.content.map(b => b.text).join('')),
     resume: () => { goal = { ...goal, phase: 'active' }; emit('goal/changed', { agent, change: { operation: 'resume' } }) },
@@ -123,4 +124,21 @@ test('user turns and a resumed goal start the count again', async () => {
   assert.notEqual(h.note(), '')
   h.resume()
   assert.equal(h.note(), '')
+})
+
+test('/clean-idle-rounds hides every past idle round and keeps rounds that worked', async () => {
+  const h = harness()
+  h.blockOff = true
+  await h.round({ tools: true })
+  await h.round()
+  await h.round()
+  await h.round({ tools: true })
+  await h.round()
+  const result = h.run('clean-idle-rounds')
+  assert.match(result.text, /goal のラウンド 3件（turn 2〜5）/)
+  const visible = h.visible()
+  for (const n of [2, 3, 5]) assert.ok(!visible.includes(`status ${n}`) && !visible.includes(`goal ${n}`))
+  for (const n of [1, 4]) assert.ok(visible.includes(`work ${n}`) && visible.includes(`goal ${n}`))
+  assert.match(h.run('clean-idle-rounds').text, /ありません/)
+  h.storable()
 })

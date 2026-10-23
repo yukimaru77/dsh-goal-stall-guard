@@ -16,6 +16,31 @@ export const DEFAULTS = {
 }
 
 const OMITTED_SOURCE = 'goal-stall-omitted'
+
+/**
+ * Goal rounds in a log that ended without any tool call (and without a user
+ * prompt in the same turn): their goal prompts and replies, by turn.
+ * @param events - the whole session log.
+ */
+export function idleRounds(events) {
+  const turns = new Map()
+  let current
+  for (const event of events) {
+    if (event.type === 'turn/start') { current = { turn: event.data.turn, goal: false, user: false, toolCalls: 0, seqs: [] }; continue }
+    if (!current) continue
+    if (event.type === 'user/message' && event.surfaceOp === 'append') {
+      if (event.data.source?.kind === 'goal') { current.goal = true; current.seqs.push(event.seq) }
+      else if (event.data.source?.kind === 'user') current.user = true
+    } else if (event.type === 'assistant/message') {
+      current.seqs.push(event.seq)
+      if (event.data.message?.content?.some(block => block?.type === 'tool-call')) current.toolCalls++
+    } else if (event.type === 'turn/end') {
+      if (current.goal && !current.user && current.toolCalls === 0 && event.data.reason?.kind === 'completed') turns.set(current.turn, current)
+      current = undefined
+    }
+  }
+  return [...turns.values()]
+}
 const CARD_COMMAND = 'goal-stall'
 
 /** The note added to the runtime context of the rounds after a stall was noticed. */
@@ -76,6 +101,22 @@ export function apply(ctx, config = {}) {
       })
     }
   }
+
+  ctx.effect(() => ctx.commands.register({
+    name: 'clean-idle-rounds',
+    description: 'Hide goal rounds that ended with a status report and no tool call from the AI (the log keeps them)',
+    handler({ agent }) {
+      if (agent.status !== 'idle') return { kind: 'error', text: 'Run this while the session is idle.' }
+      const rounds = idleRounds(agent.session.snapshotEvents())
+      const visible = new Set(agent.session.surface?.nodes ?? [])
+      const seqs = rounds.flatMap(round => round.seqs).filter(seq => visible.has(seq))
+      if (seqs.length === 0) return { kind: 'success', text: 'AIから見えている空回りのラウンドはありません。' }
+      const shown = rounds.filter(round => round.seqs.some(seq => visible.has(seq)))
+      hide(agent, seqs)
+      reset(stateFor(agent))
+      return { kind: 'success', text: `🚫 AI非表示：ツールを使わず状況報告だけで終わった goal のラウンド ${shown.length}件（turn ${shown[0].turn}〜${shown.at(-1).turn}）を、AIから見えなくしました。画面とログには残っています。` }
+    },
+  }))
 
   ctx.on('session/event', (session, event) => {
     const agent = ctx.agents.get(session.id)
