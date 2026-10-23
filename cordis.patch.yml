@@ -1,0 +1,9 @@
+# Goal rounds that end without a tool call only restate status: after 3 in a
+# row the next round is asked for a concrete step or a decision, and after 3
+# more the goal is blocked.
+- insert:
+    - id: goal-stall-guard
+      name: dsh-goal-stall-guard
+      config:
+        nudgeAfterRounds: 3
+        blockAfterRounds: 3
